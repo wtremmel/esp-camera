@@ -1,0 +1,17 @@
+{
+  "myname":"esp99",
+  "network": {
+    "ssid":"AnkhMorpork",
+    "pass":"TheC0l0r0fMag1c"
+  },
+  "mqtt":{
+    "user":"esp99",
+    "pass":"emptyfornow",
+    "server":"pi3.garf.de",
+    "port":1883
+  },
+  "location":{
+    "site":"Chattenweg5",
+    "room":"Test32"
+  }
+}
