@@ -45,9 +45,6 @@ static app_gap_cb_t m_dev_info;
 #include "Adafruit_Si7021.h"
 #include "Adafruit_BME280.h"
 #include <Adafruit_NeoPixel.h>
-#include "Adafruit_VEML6070.h"
-#include "Adafruit_ADS1015.h"
-#include "Adafruit_VL53L0X.h"
 #include <U8x8lib.h>
 
 // Global defines
@@ -77,9 +74,6 @@ static app_gap_cb_t m_dev_info;
 // Global Objects
 Adafruit_Si7021 si7021;
 Adafruit_BME280 bme280;
-Adafruit_VEML6070 veml = Adafruit_VEML6070();
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
-Adafruit_ADS1115 ads1115;
 Adafruit_NeoPixel led = Adafruit_NeoPixel(NROFLEDS, NEOPIXEL, NEO_GRB + NEO_KHZ800);
 WiFiClient espClient;
 PubSubClient client;
@@ -100,9 +94,6 @@ bool si7021_found = false;
 bool bme280_found = false;
 bool voltage_found= true;
 bool u8x8_found = false;
-bool veml_found = false;
-bool lox_found = false;
-bool ads1115_found = false;
 bool rtc_init_done = false;
 bool rtc_alarm_raised = false;
 bool light_on = true;
@@ -439,20 +430,8 @@ void setup_i2c() {
     if (error == 0) {
       Log.trace("I2C device found at address 0x%x",address);
 
-      if (address == 0x29) {
-        lox_found = lox.begin();
-        Log.notice(F("LOX found? %T"),lox_found);
-      }
 
 
-      if (address == 0x38) {
-        // VEML6070
-        veml.begin(VEML6070_1_T);
-        if (veml.readUV() != -1) {
-          veml_found = true;
-        }
-        Log.notice(F("VEML6070 found? %T"), veml_found);
-      }
       if (address == 0x3c) {
         u8x8_found = u8x8.begin();
         if (u8x8_found) {
@@ -467,12 +446,6 @@ void setup_i2c() {
         si7021 = Adafruit_Si7021();
         si7021_found = si7021.begin();
         Log.notice("Si7021 found? %T",si7021_found);
-      }
-      if ((address >= 0x48) && (address <= 0x4b)) {
-        ads1115 = Adafruit_ADS1115(address);
-        ads1115.begin();
-        ads1115_found = true;
-        Log.notice(F("ADS1115 found at 0x%x"),address);
       }
       if (address == 0x76 || address == 0x77) {
         // BME280
@@ -811,22 +784,7 @@ void loop_publish_bme280() {
   }
 }
 
-void loop_publish_veml6070() {
-  if (veml_found) {
-    mqtt_publish("UV", veml.readUV());
-  }
-}
 
-int loop_get_lox_distance() {
-  if (lox_found) {
-    VL53L0X_RangingMeasurementData_t measure;
-    lox.rangingTest(&measure);
-    if (measure.RangeStatus != 4) {
-      return measure.RangeMilliMeter;
-    }
-  }
-  return -1;
-}
 
 void lights_on(int dist) {
   bool x = false;
@@ -881,15 +839,10 @@ void loop() {
   // Voltage
     loop_publish_voltage();
     loop_publish_bme280();
-    loop_publish_veml6070();
 
     last_transmission = millis();
   }
 
-  if (lox_found) {
-    int distance = loop_get_lox_distance();
-    lights_on(distance);
-  }
 
   if (u8x8_found && light_on && (((millis() - last_display) > (1000*30)) ||
       (display_what == DISPLAY_DISTANCE))) {
@@ -913,18 +866,6 @@ void loop() {
       case DISPLAY_AIRPRESSURE:
         if (bme280_found) {
           snprintf(s, 9, "%d hPa", (int)(bme280.readPressure() / 100));
-          u8x8.clearDisplay();
-          u8x8.draw2x2String(1, 3, s);
-        }
-        break;
-      case DISPLAY_DISTANCE:
-        if (lox_found) {
-          int dist = loop_get_lox_distance();
-          if (dist >= 0) {
-            snprintf(s,9,"%d mm",dist);
-          } else {
-            snprintf(s,9,"---- mm");
-          }
           u8x8.clearDisplay();
           u8x8.draw2x2String(1, 3, s);
         }
