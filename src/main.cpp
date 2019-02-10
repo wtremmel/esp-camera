@@ -6,6 +6,13 @@
 #include <SPIFFS.h>
 
 #include "esp_camera.h"
+#include "esp_http_server.h"
+#include "img_converters.h"
+
+typedef struct {
+        httpd_req_t *req;
+        size_t len;
+} jpg_chunking_t;
 
 #include "esp_bt.h"
 #include "esp_bt_main.h"
@@ -79,6 +86,9 @@ WiFiClient espClient;
 PubSubClient client;
 U8X8_SH1106_128X64_NONAME_HW_I2C u8x8(/* reset=*/ U8X8_PIN_NONE);
 
+httpd_handle_t camera_httpd = NULL;
+
+
 unsigned transmission_delay = 60; // seconds
 uint32_t led_current_color;
 
@@ -97,6 +107,7 @@ bool u8x8_found = false;
 bool rtc_init_done = false;
 bool rtc_alarm_raised = false;
 bool light_on = true;
+bool camera_found = false;
 
 // Flags for display
 #define DISPLAY_OFF 0
@@ -390,6 +401,8 @@ void mqtt_publish(char *topic, float value) {
 }
 
 
+
+
 // Setup routines
 //
 // Scan for sensors
@@ -496,9 +509,10 @@ void setup_camera() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
+  // config.pixel_format = PIXFORMAT_JPEG;
   config.pixel_format = PIXFORMAT_JPEG;
   //init with high specs to pre-allocate larger buffers
-  config.frame_size = FRAMESIZE_UXGA;
+  config.frame_size = FRAMESIZE_QQVGA;
   config.jpeg_quality = 10;
   config.fb_count = 2;
 
@@ -510,6 +524,8 @@ void setup_camera() {
     Log.notice(F("Camera init ok"));
     sensor_t *s = esp_camera_sensor_get();
     s->set_framesize(s,FRAMESIZE_QVGA);
+    s->set_saturation(s,50000);
+    camera_found= true;
   }
 
 }
@@ -750,6 +766,67 @@ void setup_esp32() {
   setup_esp32_bluetooth();
 }
 
+static size_t jpg_encode_stream(void * arg, size_t index, const void* data, size_t len){
+    jpg_chunking_t *j = (jpg_chunking_t *)arg;
+    if(!index){
+        j->len = 0;
+    }
+    if(httpd_resp_send_chunk(j->req, (const char *)data, len) != ESP_OK){
+        return 0;
+    }
+    j->len += len;
+    return len;
+}
+
+
+static esp_err_t index_handler(httpd_req_t *req){
+    camera_fb_t * fb = NULL;
+    esp_err_t res = ESP_OK;
+
+    fb = esp_camera_fb_get();
+    if (!fb) {
+        Log.error(F("Camera capture failed"));
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+
+    size_t fb_len = 0;
+    if(fb->format == PIXFORMAT_JPEG){
+        fb_len = fb->len;
+        res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+    } else {
+        jpg_chunking_t jchunk = {req, 0};
+        res = frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk)?ESP_OK:ESP_FAIL;
+        httpd_resp_send_chunk(req, NULL, 0);
+        fb_len = jchunk.len;
+    }
+    esp_camera_fb_return(fb);
+    Log.notice(F("JPG: %u B "), (uint32_t)(fb_len));
+    return res;
+}
+
+
+
+void setup_httpd(){
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+  httpd_uri_t index_uri = {
+        .uri       = "/",
+        .method    = HTTP_GET,
+        .handler   = index_handler,
+        .user_ctx  = NULL
+  };
+
+  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+    Log.notice(F("http server on port %d started"),config.server_port);
+    httpd_register_uri_handler(camera_httpd, &index_uri);
+  }
+
+}
+
 void setup() {
   setup_led();
   setled(255,0,0);
@@ -759,7 +836,8 @@ void setup() {
   setup_readconfig();
   log_config();
   setup_i2c();
-  setup_esp32();
+  setup_camera();
+  // setup_esp32();
   setled(255, 128, 0);
   if (setup_wifi()) {
     setup_mqtt();
@@ -769,6 +847,7 @@ void setup() {
   } else {
     setled(2,1,0);
   }
+  setup_httpd();
 }
 
 void loop_publish_voltage(){
@@ -783,7 +862,6 @@ void loop_publish_bme280() {
     mqtt_publish("humidity", bme280.readHumidity());
   }
 }
-
 
 
 void lights_on(int dist) {
@@ -831,7 +909,7 @@ void loop() {
   }
   client.loop();
 
-  esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 10);
+  // esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 10);
 
   // read sensors and publish values
 
